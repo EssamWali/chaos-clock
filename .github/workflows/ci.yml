@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    name: It runs, and the clock still forms
+    runs-on: ubuntu-latest
+    env:
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Benchmark runs and the scatter renderer is the faster one
+        run: |
+          python - <<'PY'
+          import os, time, numpy as np, pygame
+          from chaos_clock import ChaosClock, new_frame, render_circles, render_scatter
+          pygame.init()
+          surface = pygame.Surface((800, 600))
+          sim = ChaosClock(20000, 800, 600, seed=0)
+          frame = new_frame(800, 600)
+          for _ in range(20):
+              sim.step()
+
+          def timed(fn, n=10):
+              for _ in range(3):
+                  fn()
+              start = time.perf_counter()
+              for _ in range(n):
+                  fn()
+              return (time.perf_counter() - start) / n
+
+          circles = timed(lambda: render_circles(surface, sim))
+          scatter = timed(lambda: render_scatter(surface, sim, frame))
+          print(f"circles {circles*1000:.2f} ms, scatter {scatter*1000:.2f} ms")
+          assert scatter < circles, "the vectorised renderer is supposed to be faster"
+          PY
+
+      # The regression this guards is subtle and was actually shipped: with the full
+      # chaos force still applied, the digits never resolve once the Lorenz states
+      # have diverged. A frame count alone would not have caught it - only the
+      # distance from each particle to where it is supposed to be.
+      - name: The clock converges from a fully diverged state
+        run: |
+          python - <<'PY'
+          import numpy as np, pygame, pygame.freetype
+          from chaos_clock import ChaosClock, time_targets, make_font
+          pygame.init(); pygame.freetype.init()
+          sim = ChaosClock(20000, 800, 600, seed=1)
+          sim.targets = time_targets("14:35", make_font(), 800, 600, 20000)
+          for _ in range(2000):
+              sim.step()
+          sim.showing_time = True
+          for _ in range(800):
+              sim.step()
+          error = np.linalg.norm(sim.positions - sim.targets, axis=1).mean()
+          print(f"mean distance to target: {error:.2f} px")
+          assert error < 15, f"clock did not form: {error:.2f} px"
+          PY
