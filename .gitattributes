@@ -1,0 +1,19 @@
+# Normalise line endings so a checkout on Windows and one on Linux produce the
+# same file, and CI's formatter check does not disagree with a local one.
+* text=auto eol=lf
+
+# Anything below is bytes, not text: never touch it.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.ttf  binary
+*.woff binary
+*.woff2 binary
+*.pt   binary
+*.pth  binary
+*.npz  binary
+*.safetensors binary
+*.sqlite3 binary
+*.pdf  binary
