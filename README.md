@@ -1,99 +1,111 @@
 # Chaos Clock
 
-Twenty thousand particles chasing a Lorenz attractor, which every so often stop
-chasing it and arrange themselves into the current time.
+Twenty thousand particles chase a Lorenz attractor and, every fifteen seconds,
+stop chasing it and arrange themselves into the current time. Each particle
+integrates its own copy of the Lorenz equations from a starting point that
+differs from its neighbours' by a nudge of order `1e-2`; the same equations from
+near-identical states produce visibly unrelated trajectories within a few
+seconds. The clock is what happens when a second force is switched on and
+outweighs the chaos. A single Python file, pygame and numpy.
 
 ![Particles on the Lorenz attractor collapsing into the digits 13:14](docs/demo.gif)
 
-Each particle carries its own Lorenz state, seeded a hair apart from every other
-one — a nudge of order `1e-2`. That is the whole idea: identical equations from
-near-identical starting points, visibly unrelated within a few seconds. The clock
-is what happens when a second force is switched on and chaos loses.
+## How it works
+
+### One Lorenz state per particle
+
+Every particle carries its own `(x, y, z)` state, initialised at `(0.1, 0, 0)`
+plus Gaussian noise of scale `1e-2`, and advanced each frame by one Euler step of
+the Lorenz system (`σ = 10`, `ρ = 28`, `β = 8/3`, `dt = 0.01`). The state's `x`
+and `y` are mapped from `[-30, 30]` onto the window (x to width, y to height,
+inverted), giving each particle a private point on the attractor to chase. The
+divergence is exponential but takes a few hundred steps to become visible, which
+is why recordings run a warm-up before the first kept frame.
+
+### Two forces
+
+Each step, a particle's velocity is damped by `0.98`, then pulled toward its
+attractor point with strength `0.001`. While the clock is showing, it is also
+pulled toward an assigned pixel of the digits with strength `0.004`, and the
+attractor pull is scaled down to a tenth (see below). Positions are updated by
+the velocity and bounce off the window edges. Nothing else acts on them.
+
+### Digits into targets
+
+The current time (`%H:%M`) is rasterised with `pygame.freetype` in Orbitron at
+160 px. The alpha channel is thresholded at 20, the coordinates of the lit
+pixels are scaled so the text spans 90% of the window width and centred, and
+those coordinates become the particles' destinations. When there are more
+particles than lit pixels (the usual case), destinations are sampled with
+replacement and jittered with Gaussian noise of 1.5 px, so the digits read as a
+cloud rather than as stacks of particles on identical coordinates. Targets are
+recomputed whenever the minute changes.
+
+### The chaos pull while the clock shows
+
+At full strength the attractor pull prevents the clock from forming once the
+Lorenz states have diverged: each particle is dragged toward a different part of
+the attractor, the pulls no longer cancel, and the two forces reach equilibrium
+with particles sitting about 50 px from their targets. Mean distance from each
+particle to its target after 800 steps of attraction, starting from a fully
+diverged state (2,000 free steps, 20,000 particles, 800×600):
+
+| chaos pull kept while the clock shows | mean error |
+| --- | ---: |
+| 100% | 52.30 px |
+| 50% | 28.62 px |
+| 25% | 14.97 px |
+| **10%** | **6.16 px** |
+| 0% | 0.05 px |
+
+The code keeps 10% (`LORENZ_WHEN_SHOWING = 0.1`). Zero gives a perfectly still
+clock; a tenth keeps the digits shimmering. CI asserts the mean error stays under
+15 px from the same diverged start.
+
+## Performance
+
+Two renderers are included. `render_circles` calls `pygame.draw.circle` once per
+particle; `render_scatter` writes a 3×3 block for every particle into a
+`(width, height, 3)` numpy array with nine fancy-index assignments and blits the
+array once. Measured with `--benchmark` at 20,000 particles, 800×600, on one
+machine:
+
+| | ms/frame | end-to-end fps |
+| --- | ---: | ---: |
+| physics only | 0.67 | — |
+| render: `pygame.draw.circle` ×20,000 | 23.60 | 41.2 |
+| render: numpy scatter, one blit | 6.30 | **143.5** |
+
+3.7× on the render and 3.5× end to end. Absolute figures vary by machine; the
+ordering is what CI checks. The scatter renderer is the default; `--trails` fades
+the previous frame instead of clearing it.
 
 ## Running it
 
 ```
 pip install -r requirements.txt
 
-python chaos_clock.py                     # a window
+python chaos_clock.py                     # open a window
 python chaos_clock.py --benchmark         # compare the two renderers
-python chaos_clock.py --trails 0.9        # let the particles smear
+python chaos_clock.py --trails 0.9        # fading trails
 python chaos_clock.py --record demo.gif --warmup 2000 --switch-at 400 \
-    --frames 110 --every 12 --scale 0.5   # exactly the GIF above
+    --frames 110 --every 12 --scale 0.5   # the GIF above, headless
 ```
 
-## Making it fast
-
-The first version drew each particle with `pygame.draw.circle`. Twenty thousand
-calls a frame is 1.2 million a second at 60 fps, and almost all of that cost is
-call overhead rather than pixels — it could not hold 60 fps on a machine that had
-no trouble with the physics.
-
-Scattering the particles into a numpy array and blitting once moves the loop out
-of Python entirely:
-
-| | ms/frame | end-to-end fps |
-| --- | ---: | ---: |
-| physics only | 0.67 | — |
-| render — `pygame.draw.circle` ×20,000 | 23.60 | 41.2 |
-| render — numpy scatter, one blit | 6.30 | **143.5** |
-
-**3.7× on the render, 3.5× end to end**, and it clears 60 fps with room to spare.
-Reproduce with `--benchmark`.
-
-Worth noting what did *not* work. The obvious next step is to flatten the nine
-per-particle offsets into one big fancy-index assignment instead of nine smaller
-ones. It is slower — 6.5 ms against 5.1 — because the `np.repeat` needed to line
-the colours up allocates more than the batching saves. The simpler code was also
-the faster code, which is not how it usually goes.
-
-## The clock that would not form
-
-Running it for a while, the digits stopped resolving. They would gather into a
-smear roughly the right shape and stay there.
-
-It is not a rendering problem, it is the physics. Early in a session every
-particle's Lorenz state is still close to the origin, so the chaos force is small
-and points much the same way for all of them, and the text attraction wins
-easily. Once the states have diverged — which is the entire point of the piece —
-every particle is being dragged toward a different part of the attractor, and
-those pulls no longer cancel. The two forces reach equilibrium with the particles
-sitting about 50 px from where they are supposed to be.
-
-Measured, as mean distance from each particle to its target after 800 steps of
-attraction, starting from a fully diverged state:
-
-| chaos pull kept while the clock shows | mean error |
-| --- | ---: |
-| 100% (original) | 52.30 px |
-| 50% | 28.62 px |
-| 25% | 14.97 px |
-| **10%** | **6.16 px** |
-| 0% | 0.05 px |
-
-Ten percent is the number in the code. Zero gives a clock made of stone and
-throws away the shimmer, which is the nicest thing about it.
-
-## How the digits are made
-
-The time is rasterised to a surface with `pygame.freetype`, the alpha channel is
-thresholded, and the coordinates of the lit pixels become the destinations. There
-are usually more particles than lit pixels, so destinations are sampled with
-replacement and jittered — otherwise the digits come out as stacks of particles
-sitting on identical coordinates rather than as a cloud.
-
-Everything else is one force added to another. Velocity is damped each step,
-pulled toward the particle's own point on the attractor, and — while the clock is
-showing — pulled four times as hard toward its assigned pixel. Particles bounce
-off the edges of the window.
+Other options: `--particles`, `--width`, `--height`, `--fps`, `--interval`
+(seconds between chaos and clock, default 15), `--renderer circles`. Recording
+runs with a dummy SDL video driver and needs no display.
 
 ## Files
 
 | | |
 | --- | --- |
-| `chaos_clock.py` | Simulation, both renderers, benchmark, recorder. |
+| `chaos_clock.py` | Simulation, both renderers, benchmark, GIF recorder. |
 | `Orbitron-Regular.ttf` | The clock face. SIL Open Font License 1.1, see `OFL.txt`. |
+| `docs/demo.gif` | The recording above. |
+| `.github/workflows/ci.yml` | Checks the scatter renderer is faster and the clock still forms. |
 
 The font is [Orbitron](https://github.com/theleagueof/orbitron) by The Orbitron
-Project Authors, used under the SIL Open Font License 1.1. Everything else here
-is mine.
+Project Authors, used under the SIL Open Font License 1.1.
+
+More: [development notes](docs/notes.md).
